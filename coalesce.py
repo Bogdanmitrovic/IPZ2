@@ -1,16 +1,16 @@
 from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, StringType
+from pyspark.sql.types import StructType, StructField, TimestampType, FloatType, IntegerType
 
 spark = SparkSession.builder.master("local[2]") \
     .appName("Coalesce").getOrCreate()
 
 csv_schema = StructType([
-    StructField("timestamp", StringType(), True),
-    StructField("plocha", StringType(), True),
-    StructField("dc_power", StringType(), True),
-    StructField("ac_power", StringType(), True)
+    StructField("timestamp-from", TimestampType(), True),
+    StructField("timestamp-to", TimestampType(), True),
+    StructField("plant_id", IntegerType(), True),
+    StructField("total_dc_power", FloatType(), True),
+    StructField("total_ac_power", FloatType(), True)
 ])
 
 allfiles = spark.read.csv("out/*.csv", header=False, schema=csv_schema)
-allfilesfiltered = allfiles.filter(allfiles.ac_power.isNotNull())
-allfilesfiltered.coalesce(1).write.option("header", "true").csv("final")
+allfiles.coalesce(1).write.option("header", "true").csv("final")

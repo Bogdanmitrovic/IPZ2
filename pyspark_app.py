@@ -1,43 +1,50 @@
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as funcs
-from pyspark.sql.functions import window, avg, col
+from pyspark.sql.functions import window, col, sum
 
 spark = SparkSession.builder.master("local[2]") \
     .appName("SensorDataStreaming").getOrCreate()
 
-socketDF = spark.readStream \
+socket_df = spark.readStream \
     .format("socket") \
     .option("host", "localhost") \
     .option("port", 9999) \
     .load()
 
-split_df = socketDF.selectExpr("split(value, ',') AS data")
+split_df = socket_df.selectExpr("split(value, ',') AS data")
 
 parsed_df = split_df.selectExpr(
-    "data[0] as timestamp",
-    "data[2] as plocha",
-    "CASE WHEN data[3] = 0 THEN NULL ELSE CAST(data[3] AS INTEGER) END as dc_power",
-    "CASE WHEN data[4] = 0 THEN NULL ELSE CAST(data[4] AS INTEGER) END as ac_power"
+    "data[0] as plant_id",
+    "data[1] as timestamp",
+    "data[3] as plocha",
+    "data[4] as dc_power",
+    "data[5] as ac_power"
+)
+timestamped_wide_df = (parsed_df
+                       .withColumn("timestamp1", funcs.to_timestamp("timestamp", "dd-MM-yyyy HH:mm"))
+                       .withColumn("timestamp2", funcs.to_timestamp("timestamp", "yyyy-MM-dd HH:mm:ss")))
+timestamped_df = (timestamped_wide_df.withColumn("timestamp", funcs.when(funcs.col("timestamp1").isNotNull(),
+                                                                         funcs.col("timestamp1")).otherwise(
+    funcs.col("timestamp2"))).drop("timestamp1", "timestamp2"))
+
+grouped_df = timestamped_df.withWatermark("timestamp", "10 minutes") \
+    .groupBy(
+    window(col("timestamp"), "60 minutes", "15 minutes"),
+    col("plant_id")) \
+    .agg(sum("dc_power").alias("total_dc_power"), sum("ac_power").alias("total_ac_power")) \
+    .select(
+    col("window.start").alias("timestamp_from"),
+    col("window.end").alias("timestamp_to"),
+    col("plant_id"),
+    col("total_ac_power"),
+    col("total_dc_power")
 )
 
-timestamped_df = parsed_df.withColumn("timestamp", funcs.to_timestamp("timestamp", "dd-MM-yyyy HH:mm"))
-
-windowed_df = timestamped_df.withWatermark("timestamp", "10 minutes") \
-    .groupBy(window(col("timestamp"), "60 minutes", "15 minutes")) \
-    .agg(avg("dc_power").alias("avg_dc_power"), avg("ac_power").alias("avg_ac_power"))
-
-q1 = windowed_df.select('window.start', 'window.end', 'avg_dc_power', 'avg_ac_power').writeStream \
+q1 = grouped_df.writeStream \
     .format("csv") \
-    .trigger(processingTime="10 seconds") \
+    .trigger(processingTime="4 seconds") \
     .option("checkpointLocation", "checkpoint/") \
     .option("path", "out/") \
     .outputMode("append") \
     .start() \
     .awaitTermination()
-
-q2 = windowed_df.writeStream \
-    .outputMode("append") \
-    .format("console") \
-    .option("truncate", False) \
-    .start()
-q2.awaitTermination()
